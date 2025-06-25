@@ -1,0 +1,44 @@
+{
+  "name": "v5_rps_with_parallelisation",
+  "title": "v5_rps_with_parallelisation",
+  "summary": "This is the RPS app but modified to download only selected images based on a provided list.",
+  "dxapi": "1.0.0",
+  "version": "0.0.2",
+  "inputSpec": [
+    {
+      "name": "image_list_file",
+      "label": "List of image file paths (relative to Fundus (left) folder)",
+      "class": "file",
+      "optional": false,
+      "help": "Provide a plain text file with one relative path per line (e.g., '10/1234567_image.png')"
+    }
+  ],
+  "outputSpec": [],
+  "runSpec": {
+    "timeoutPolicy": {
+      "*": {
+        "days": 14
+      }
+    },
+    "interpreter": "bash",
+    "file": "src/v5_rps_with_parallelisation.sh",
+    "distribution": "Ubuntu",
+    "release": "20.04",
+    "version": "0"
+  },
+  "access": {
+    "network": [
+      "*"
+    ],
+    "project": "CONTRIBUTE"
+  },
+  "regionalOptions": {
+    "aws:eu-west-2": {
+      "systemRequirements": {
+        "*": {
+          "instanceType": "mem2_ssd2_gpu1_x32"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "gcta_cojo_applet_merged",
+  "title": "GCTA-COJO-MERGED",
+  "summary": "Runs GCTA-COJO using a filtered .ma file and PLINK LD reference files.",
+  "dxapi": "1.0.0",
+  "inputSpec": [
+    {
+      "name": "in",
+      "label": "MA and PLINK files",
+      "help": "Provide a .ma file and corresponding .bed, .bim, and .fam files",
+      "class": "array:file",
+      "patterns": ["*.ma", "*.bed", "*.bim", "*.fam"],
+      "optional": false
+    }
+  ],
+  "runSpec": {
+    "interpreter": "bash",
+    "file": "src/run_executable.sh",
+    "systemRequirements": {
+      "*": {
+        "instanceType": "mem2_ssd1_v2_x16"
+      }
+    },
+    "distribution": "Ubuntu",
+    "release": "20.04",
+    "version": "0",
+    "execDepends": [
+      { "name": "unzip" }
+    ]
+  }
+}

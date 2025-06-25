@@ -1,0 +1,30 @@
+{
+  "name": "my_matlab_applet_smoothed",
+  "title": "Foveal Parameter Analysis",
+  "summary": "Analyzes OCT data to extract foveal parameters.",
+  "dxapi": "1.0.0",
+  "inputSpec": [
+    {
+      "name": "file_list",
+      "label": "Input File List",
+      "help": "A text file containing a list of input OCT data file IDs.",
+      "class": "file",
+      "patterns": ["*.txt"]
+    }
+  ],
+  "runSpec": {
+    "interpreter": "bash",
+    "file": "src/run_executable.sh",
+    "systemRequirements": {
+      "*": {
+        "instanceType": "mem2_ssd1_gpu_x16"
+      }
+    },
+    "distribution": "Ubuntu",
+    "release": "20.04",
+    "version": "0",
+    "execDepends": [
+      { "name": "unzip" }
+    ]
+  }
+}

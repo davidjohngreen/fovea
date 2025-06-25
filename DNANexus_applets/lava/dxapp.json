@@ -1,0 +1,44 @@
+{
+  "name": "lava_applet",
+  "title": "LAVA - Parallelized",
+  "summary": "Runs LAVA on a trait pair and a chunk of the loci file.",
+  "dxapi": "1.0.0",
+  "inputSpec": [
+  {
+    "name": "trait1",
+    "label": "Trait 1 Summary Stats",
+    "class": "file",
+    "patterns": ["*.sumstats.gz"],
+    "optional": false
+  },
+  {
+    "name": "trait2",
+    "label": "Trait 2 Summary Stats",
+    "class": "file",
+    "patterns": ["*.sumstats.gz"],
+    "optional": false
+  },
+  {
+    "name": "loci_chunk",
+    "label": "Loci Chunk File",
+    "class": "file",
+    "patterns": ["*.txt"],
+    "optional": false
+  }
+  ],
+  "runSpec": {
+    "interpreter": "bash",
+    "file": "src/main.sh",
+    "systemRequirements": {
+      "*": {
+        "instanceType": "mem2_ssd1_v2_x16"
+      }
+    },
+    "distribution": "Ubuntu",
+    "release": "20.04",
+    "version": "0",
+    "execDepends": [
+      { "name": "unzip" }
+    ]
+  }
+}
