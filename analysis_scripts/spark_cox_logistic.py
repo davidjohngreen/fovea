@@ -1,7 +1,56 @@
 # ----------------------------
-# CFP Cox Regression Pipeline
+# OCT Cox Regression Pipeline
 # ----------------------------
+"""
+Run survival analyses testing associations between foveal imaging traits and incident
+ophthalmic disease outcomes in UK Biobank.
 
+This script sets up and runs a Cox proportional hazards pipeline in the DNAnexus /
+UK Biobank RAP environment to assess whether OCT-derived foveal parameters are
+associated with future risk of outcomes such as age-related macular degeneration
+(AMD) or glaucoma.
+
+Main steps:
+1. Installs required Python packages and downloads the input phenotype / outcome files.
+2. Connects to the UK Biobank dataset using dxdata and retrieves relevant fields,
+   including dates of diagnosis, month and year of birth, year of scan, genetic sex,
+   and death records.
+3. Cleans and reformats the UK Biobank data, including calculation of age at scan.
+4. Loads the external file containing foveal parameters and merges it with the
+   UK Biobank participant data by participant ID.
+5. Prepares covariates for modelling, including sex, age at scan, spherical equivalent,
+   and ancestry.
+6. For each foveal parameter and each disease date field, constructs a time-to-event
+   dataset in which:
+   - follow-up begins at the imaging date,
+   - events are defined by a qualifying diagnosis after baseline,
+   - censoring occurs at death or the study censor date.
+7. Fits Cox proportional hazards models adjusted for the selected covariates.
+8. Converts model coefficients into hazard ratios, including hazard ratios expressed
+   per 1 standard deviation increase in the imaging trait.
+9. Saves the final results table to CSV for downstream interpretation.
+
+Outputs:
+- A CSV file containing, for each imaging trait and outcome:
+  - number of subjects
+  - number of events
+  - hazard ratio
+  - 95% confidence intervals
+  - p-value
+  - standard deviation used
+  - hazard ratio per 1 SD increase
+
+Notes:
+- The script uses imaging date as baseline for survival analysis.
+- Diagnosis dates before baseline are excluded from the incident event definition.
+- Death dates are used where available to define participant-specific censoring.
+- The active section runs univariable trait-by-trait Cox models with covariate adjustment,
+  while additional commented sections include alternative analyses such as multivariable
+  Cox models, correlation-pruned models, FDR correction, and logistic regression.
+
+This is useful for testing whether structural variation in foveal morphology is
+associated with later ophthalmic disease risk in a large population cohort.
+"""
 
 
 # ----------------------------
@@ -12,8 +61,16 @@
 
 
 # Download input files from DNAnexus
-!dx download "/DaveGreen_temp/cox_regression/ICD10_codes_subset.csv"
-!dx download "/DaveGreen_temp/cox_regression/for_cox.csv"
+!dx download "/Users/David/DaveGreen_temp/cox_regression/ICD10_codes_subset.csv"
+!dx download "/Users/David/DaveGreen_temp/cox_regression/for_cox.csv"
+
+!dx download "/Users/David/right_vs_left_checks/cox/for_cox_left.csv"
+
+
+
+!dx download "/Users/David/right_vs_left_checks/cox/for_cox_smart_avg.csv"
+
+
 
 # Imports
 import os
@@ -32,6 +89,8 @@ import dxdata
 import pyspark
 from pandas.api.types import is_numeric_dtype
 from distutils.version import LooseVersion
+import numpy as np
+from math import exp
 
 # ----------------------------
 # Spark & Dataset Setup
@@ -54,6 +113,9 @@ participant = dataset['participant']
 # Prepare Field List
 # ----------------------------
 df_outcomes = pd.read_csv("ICD10_codes_subset.csv")
+
+
+
 df_outcomes['Field ID'] = df_outcomes['Field ID'].astype(str)
 field_ids = df_outcomes['Field ID'].dropna().unique().tolist()
 field_ids += ["52", "21836", "33", "34", "22001", "21836_i1", "40000"]
@@ -90,16 +152,22 @@ df['month_scan_0'] = df['YOS'].astype(str).str.split('-').str[1]
 df['MOB_numeric'] = df['MOB'].map(month_dict)
 df['Age_at_scan'] = df['year_scan_0'].astype(int) - df['YOB'].astype(int) - (df['month_scan_0'].astype(int) < df['MOB_numeric'].astype(int))
 
+
+
 # ----------------------------
 # Merge with Input Embeddings
 # ----------------------------
-CFP = pd.read_csv("for_cox.csv")
+CFP = pd.read_csv("for_cox_left.csv")
+
+# Trim SE outside ±6D by setting them to NaN
+CFP.loc[(CFP['SE'] <= -1) | (CFP['SE'] >= 1), 'SE'] = np.nan
+
 CFP['IID'] = CFP['patient_id'].astype(int)
 df['eid'] = df['eid'].astype(int)
+
 merged = pd.merge(df, CFP, left_on="eid", right_on="IID", how="inner")
 merged['sex_binary'] = (merged['Genetic_sex'] == 'Male').astype(int)
 
-# 🟢 Force EUR as the reference ancestry
 merged['ancestry'] = pd.Categorical(
     merged['ancestry'],
     categories=['EUR', 'AFR', 'EAS', 'SAS'],
@@ -122,9 +190,12 @@ for col in date_cols:
 
 
 
+
+
 # ----------------------------
-# Run Cox Regression Loop
+# Cox with SD scaling
 # ----------------------------
+Z = 1.96
 cox_models = []
 cph = CoxPHFitter()
 
@@ -149,47 +220,71 @@ for emb in emb_cols:
             ancestry_dummies
         ], axis=1).dropna()
 
+        n_subjects = len(df_model)
+        n_events = int(df_model['event'].sum())
+        if n_events < 5 or n_subjects < 20:
+            print(f"⚠️ Skipping emb={emb}, date={date_col}: too few events/subjects ({n_events}/{n_subjects})")
+            continue
+
         try:
             cph.fit(df_model, duration_col='duration', event_col='event')
         except ValueError as e:
             print(f"⚠️ Skipping emb={emb}, date={date_col}: {e}")
             continue
 
-        sm = cph.summary.loc[emb].to_dict()
-        total_events = tmp['event'].sum()
-        event_name = date_col.split('(', 1)[1].split(')', 1)[0]
+        # pull coef & SE for this predictor
+        row = cph.summary.loc[emb]
+        beta = float(row['coef'])
+        se   = float(row['se(coef)'])
+        hr   = float(row['exp(coef)'])
+        lci  = float(row['exp(coef) lower 95%'])
+        uci  = float(row['exp(coef) upper 95%'])
+        pval = float(row['p'])
+
+        # --- per z-score (per 1 SD) ---
+        sd = float(df_model[emb].std(ddof=1))          # SD on the exact analysis set
+        HR_perZ  = float(np.exp(beta * sd))
+        LCI_perZ = float(np.exp((beta - Z*se) * sd))
+        UCI_perZ = float(np.exp((beta + Z*se) * sd))
+
+        # clean event name
+        try:
+            event_name = date_col.split('(', 1)[1].split(')', 1)[0]
+        except Exception:
+            event_name = str(date_col)
 
         cox_models.append({
             'emb': emb,
             'event_col': event_name,
-            'total_cases': total_events,
-            'HR': sm['exp(coef)'],
-            'LCI_95': sm['exp(coef) lower 95%'],
-            'UCI_95': sm['exp(coef) upper 95%'],
-            'p_value': sm['p']
+            'n_subjects': n_subjects,
+            'n_events': n_events,
+            # native units
+            'HR': hr, 'LCI_95': lci, 'UCI_95': uci, 'p_value': pval, 'SE': se, 
+            # per 1 SD (z)
+            'SD_used': sd,
+            'HR_perZ': HR_perZ, 'LCI_95_perZ': LCI_perZ, 'UCI_95_perZ': UCI_perZ,
         })
 
-        print(f"✅ Fitted CoxPH for emb={emb}, date={date_col} ({len(df_model)} subjects, {total_events} events)")
+        print(f"✅ {emb} × {event_name}: N={n_subjects}, events={n_events}, SD={sd:.4g}, HR_perZ={HR_perZ:.3g}")
 
-# ----------------------------
-# Save Results & Perform FDR Correction
-# ----------------------------
-df_results = pd.DataFrame(cox_models)
-df_results.to_csv("v1_CFP_cox_results.csv", index=False)
-
-mask = df_results['p_value'].notna() & (df_results['p_value'] >= 0) & (df_results['p_value'] <= 1)
-rej, pvals_fdr = fdrcorrection(df_results.loc[mask, 'p_value'], alpha=0.05)
-df_results.loc[mask, 'reject_fdr'] = rej
-df_results.loc[mask, 'pval_fdr'] = pvals_fdr
-df_results_sorted = df_results.sort_values(by="pval_fdr")
-df_results_sorted.to_csv("david_cox_results.csv", index=False)
+# Optionally turn into a DataFrame/CSV
+cox_df = pd.DataFrame(cox_models)
+cox_df.to_csv("cox_results_perZ_1D.csv", index=False)
 
 
 
 
-# ----------------------------
-# Run Logistic Regression Loop
-# ----------------------------
+
+
+
+
+
+
+
+
+# # ----------------------------
+# # Run Logistic Regression Loop
+# # ----------------------------
 import statsmodels.api as sm
 
 logit_models = []
@@ -245,8 +340,5 @@ for emb in emb_cols:
 # ----------------------------
 df_logit_results = pd.DataFrame(logit_models)
 df_logit_results.to_csv("david_logit_results.csv", index=False)
-
-
-
 
 
